@@ -8,6 +8,7 @@ const express = require('express')
 const Web3 = require('web3')
 const HDWalletProvider = require('@truffle/hdwallet-provider')
 const BN = require('bn.js')
+const moment = require('moment')
 //--- directory files
 const inputs = require('./inputs.js')
 const approve = require('./approve.js')
@@ -27,13 +28,18 @@ const poolData = contractData['Uniswap V2 WETH-WNXM'] //V2 Pool; requires WETH
 const pool = new web3.eth.Contract(poolData.abi, poolData.address)
 pool.transactionConfirmationBlocks = 1 // FOR GANACHE TESTING ONLY
 
-//----- CONTRACT for Target Token -----//
-const targetTokenData = contractData[inputs.targetToken]
-const targetToken = new web3.eth.Contract(targetTokenData.abi, targetTokenData.address)
+//----- CONTRACT DETAILS for Uniswap Router -----//
+const routerData = contractData['Uniswap V2 Router02'] //V2 Router
+const router = new web3.eth.Contract(routerData.abi, routerData.address)
+router.transactionConfirmationBlocks = 1 // FOR GANACHE TESTING ONLY
 
 //------ CONTRACT for Base Token -----//
 const baseTokenData = contractData[inputs.baseToken]
 const baseToken = new web3.eth.Contract(baseTokenData.abi, baseTokenData.address)
+
+//----- CONTRACT for Target Token -----//
+const targetTokenData = contractData[inputs.targetToken]
+const targetToken = new web3.eth.Contract(targetTokenData.abi, targetTokenData.address)
 
 
 //----- USER INPUTS -----//
@@ -41,10 +47,8 @@ const baseToken = new web3.eth.Contract(baseTokenData.abi, baseTokenData.address
 var minTrade = web3.utils.toWei(inputs.minTradeSize, 'ether') // In units of base token, converted to no decimals
 var maxTrade = web3.utils.toWei(inputs.maxTradeSize, 'ether') // In units of base token, converted to no decimals
 var limitPrice = inputs.limitPrice // max base tokens to pay for 1 target token
-var baseTokenApproved = web3.utils.toWei(inputs.targetPosition, 'ether') // Setting approval request equal to target position
+var baseTokenApproved = web3.utils.toWei(inputs.maxApproval, 'ether') // Setting approval request equal to target position
 var tradingAccount = process.env.ACCOUNT
-
-
 
 //////////////////////////////////////////////////////////////////////////////
 //                               FUNCTIONS                                  //
@@ -57,7 +61,8 @@ async function monitorPrice() {
     if (monitoringPrice) {
         return
     }
-    
+
+    console.log('--------------------------------------------------')
     console.log('-- Checking Wallet Balances...')
     
     //----- Check Total Balances in Wallet -----//
@@ -65,33 +70,44 @@ async function monitorPrice() {
     //  the target balance has been reached, exit the program.
     baseBalance = await baseToken.methods.balanceOf(process.env.ACCOUNT).call()
     baseBalance = web3.utils.fromWei(baseBalance.toString(), 'ether')
-    console.log('       Balance in Wallet:', baseBalance,targetTokenData.symbol)
+    console.log('       Balance in Wallet:', baseBalance, baseTokenData.symbol)
     
     targetBalance = await targetToken.methods.balanceOf(process.env.ACCOUNT).call()
     targetBalance = web3.utils.fromWei(targetBalance.toString(), 'ether')
     console.log('       Balance in Wallet:', targetBalance, targetTokenData.symbol)
     
-    if (targetBalance >= inputs.targetPosition) {
+    if (Number(baseBalance) < Number(inputs.minTradeSize)) {
+        console.log('Insufficient',baseTokenData.symbol)
+        clearInterval(priceMonitor)
+        return
+    } 
+
+    if (Number(targetBalance) >= Number(inputs.targetPosition)) {
         console.log('Target of', inputs.targetPosition,' reached!')
         clearInterval(priceMonitor)
         return
     } 
     
     console.log('-- Confirming', baseTokenData.symbol ,'is approved to trade...')
-    console.log('* Commented out for Testing *')
     
-    //----- ERC20 Token Approval -----// Approval not needed: baseToken=ETH & PrivKey is provided
-    //approvalStatus = JSON.parse(fs.readFileSync('approvalStatus.json'))
-    //currApprovedAmount = approvalStatus.approvedAmount
-    //if (currApprovedAmount <= maxTrade) {
-    //    currApprovedAmount = await approve.approveToken(baseToken, contractData.address, baseTokenApproved, tradingAccount)
-    //    console.log('Additional', baseTokenData.address, 'Approved: ', currApprovedAmount)
-    //    var newApprovedAmount = { approvedAmount: currApprovedAmount}
-    //    fs.writeFileSync('./approvalStatus.json', JSON.stringify(newApprovedAmount, null, 2) , 'utf-8');
-    //    return
-    //}
-        
-        
+    //----- ERC20 Token Approval -----// Approval not needed if baseToken=ETH & PrivKey is provided
+    approvalStatus = await JSON.parse(fs.readFileSync('approvalStatus.json'))
+    currApprovedAmount = approvalStatus.approvedAmount
+    if (currApprovedAmount <= maxTrade) {
+        try{
+            currApprovedAmount = await approve.approveToken(baseToken, routerData.address, baseTokenApproved, tradingAccount)
+            console.log('   Additional', baseTokenData.symbol, 'Approved:', currApprovedAmount)
+            var newApprovedAmount = { approvedAmount: currApprovedAmount}
+            fs.writeFileSync('./approvalStatus.json', JSON.stringify(newApprovedAmount, null, 2) , 'utf-8');
+        } catch (error) {
+            console.log('Error')    
+            return
+        }
+    } else {
+        console.log('      Remaining Approved:',currApprovedAmount.toString())
+    }
+    
+     
     //----- Starting Price Check && Swap -----//
     console.log('-- Checking spot price...')
     monitoringPrice = true
@@ -123,10 +139,9 @@ async function monitorPrice() {
         baseTokenIn = web3.utils.toBN(Math.min(inGivenPrice, maxTrade))
         console.log('     Executing Trade for:', web3.utils.fromWei(baseTokenIn.toString(),'ether'), baseTokenData.symbol)
         // Effective Price <- based on actual values traded
-        //  outGivenIn = outputBalance * (1- ( (inputBalance/(inputBalance + inputAmount))**(inputWeight / outputWeight) ) )
-        outGivenIn = targetTokenReserve.toString() * (1-((baseTokenReserve / baseTokenReserve.add(baseTokenIn)) ** (0.5/0.5) ) )
-        console.log('         Expected Return:', web3.utils.fromWei(outGivenIn.toString(),'ether'), targetTokenData.symbol)
-        effectivePrice = baseTokenIn / outGivenIn
+        quote = await router.methods.getAmountOut(baseTokenIn, baseTokenReserve, targetTokenReserve).call()
+        console.log('           Quoted Return:', web3.utils.fromWei(quote.toString(),'ether'), targetTokenData.symbol)
+        effectivePrice = baseTokenIn / quote
         console.log('         Effective Price:', effectivePrice.toString(),baseTokenData.symbol,'per',targetTokenData.symbol)
 
         //----- Execute Buy -----//            
@@ -135,39 +150,40 @@ async function monitorPrice() {
         var gasPrice = await web3.eth.getGasPrice()
         gasPrice = web3.utils.toBN(gasPrice * 1.10) // will pay 10% above current avg. gas prices to expedite transaction
         
-//UPDATE    var gasLimit = await pool.methods.swap(
-//              baseTokenData.address,
-//              targetTokenData.address,
-//              web3.utils.toWei(inputs.maxTradeSize,'ether'),
-//              SCresult.returnAmount, //No slippage
-//              SCresult.distribution,
-//              0
-//          ).estimateGas({
-//              from: process.env.ACCOUNT,
-//          })
+        let now = moment().unix() // fetch current unix timestamp
+        let deadline = now + 60 // add 60 seconds
+        let amountOutMin = (quote * 0.99).toString() // 1% slippage
+        let addressPath = [baseTokenData.address,targetTokenData.address]
+
+        var gasLimit = await router.methods.swapExactTokensForTokens(
+            baseTokenIn,
+            amountOutMin,
+            addressPath,
+            process.env.ACCOUNT,
+            deadline
+            ).estimateGas({from: process.env.ACCOUNT,})
                         
-//UPDATE    var swapExecution = await pool.methods.swap(
-//              baseTokenData.address,
-//              targetTokenData.address,
-//              web3.utils.toWei(inputs.maxTradeSize,'ether'),
-//              SCresult.returnAmount, //No slippage
-//              SCresult.distribution,
-//              0
-//          ).send({
-//              from: process.env.ACCOUNT,
-//              gas: gasLimit,
-//              gasPrice: gasPrice,
-//              value: web3.utils.toWei(inputs.maxTradeSize,'ether')
-//          })
+        var swapExecution = await router.methods.swapExactTokensForTokens(
+            baseTokenIn,
+            amountOutMin,
+            addressPath,
+            process.env.ACCOUNT,
+            deadline
+            ).send({
+                from: process.env.ACCOUNT,
+                gas: gasLimit,
+                gasPrice: gasPrice
+                //value: baseTokenIn
+            })
             
-//          console.log(swapExecution)
+        console.log('         Swap successful:', swapExecution.transactionHash)
 
-            //----- Update Approval Counter -----//
-            //currApprovedAmount = currApprovedAmount - baseTokenIn
-            //var newApprovedAmount = {approvedAmount: currApprovedAmount}
-            //fs.writeFileSync('./approvalStatus.json', JSON.stringify(newApprovedAmount, null, 2) , 'utf-8');
+        //----- Update Approval Counter -----//
+        currApprovedAmount = currApprovedAmount - baseTokenIn
+        var newApprovedAmount = {approvedAmount: currApprovedAmount}
+        fs.writeFileSync('./approvalStatus.json', JSON.stringify(newApprovedAmount, null, 2) , 'utf-8');
 
-            console.log('-- Swap Complete...')
+        console.log('-- Process Complete...')
         }
 
     } catch (error) {
