@@ -1,0 +1,17 @@
+{
+  "name": "uniswap-position-bot",
+  "version": "1.0.0",
+  "description": "This script leverages Uniswap's smart contracts to acquire a specified number of targetTokens where targetToken is the ERC20 token being acquired and baseToken is ETH (can be configured to an ERC20 token) being spent.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "@truffle/hdwallet-provider": "^1.2.1",
+    "bn.js": "^4.11.9",
+    "web3": "^1.3.3"
+  }
+}
