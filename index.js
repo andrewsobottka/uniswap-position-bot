@@ -104,7 +104,7 @@ async function monitorPrice() {
             return
         }
     } else {
-        console.log('      Remaining Approved:',currApprovedAmount.toString())
+        console.log('      Remaining Approved:',web3.utils.fromWei(currApprovedAmount.toString(),'ether'))
     }
     
      
@@ -124,6 +124,7 @@ async function monitorPrice() {
         currentSpotPrice = (baseTokenReserve / baseTokenWeight) / (targetTokenReserve / targetTokenWeight)
         console.log('      Current Spot Price:', currentSpotPrice.toString(),baseTokenData.symbol,'per',targetTokenData.symbol)
         console.log('             Limit price:',limitPrice, baseTokenData.symbol,'per',targetTokenData.symbol)
+        
         // In-Given-Price <- What is the max we can put in before price moves beyond limit? See Balancer whitepaper
         //  inGivenPrice = inputTokenBalance * ( ( (targetPrice/currentSpotPrice) ** (outputTokenWeight/(outputTokenWeight + inputTokenWeight)) ) -1 )
         inGivenPrice = baseTokenReserve.toString() * ( ( (web3.utils.toWei(limitPrice,'ether') / web3.utils.toWei(currentSpotPrice.toString(),'ether')) ** (0.5) ) -1 )
@@ -132,12 +133,52 @@ async function monitorPrice() {
         console.log('         Min Trade Limit:', web3.utils.fromWei(minTrade,'ether'), baseTokenData.symbol)
         console.log('         Max Trade Limit:', web3.utils.fromWei(maxTrade,'ether'), baseTokenData.symbol)
 
-        if (inGivenPrice < minTrade) {
-            console.log('Insufficient liquidity...')
-        } else {
+        //----- Aggregate Recent Transactions -----//
+        console.log('- Checking recent transactions...')
+        var blockNumber = await web3.eth.getBlockNumber()
 
-        baseTokenIn = web3.utils.toBN(Math.min(inGivenPrice, maxTrade))
-        console.log('     Executing Trade for:', web3.utils.fromWei(baseTokenIn.toString(),'ether'), baseTokenData.symbol)
+        startingBlock = (blockNumber - inputs.blocksToAnalyze)
+        blockInfo = await web3.eth.getBlock(startingBlock)
+        blockTimestamp = blockInfo.timestamp
+        startTime = new Date(blockTimestamp * 1000)
+
+        blockInfo = await web3.eth.getBlock(blockNumber)
+        blockTimestamp = blockInfo.timestamp
+        endTime = new Date(blockTimestamp * 1000)
+
+        var swaps = await pool.getPastEvents('Swap', {
+            fromBlock: startingBlock,
+            toBlock: blockNumber
+        })
+        
+        let baseTokenDelta = web3.utils.toBN(0)
+        let targetTokenDelta = web3.utils.toBN(0)
+
+        for (var i = 0; i < swaps.length; i++){
+            baseTokenTransaction = web3.utils.toBN(swaps[i].returnValues.amount1In - swaps[i].returnValues.amount1Out)
+            baseTokenDelta = baseTokenDelta.add(web3.utils.toBN(swaps[i].returnValues.amount1In))
+            baseTokenDelta = baseTokenDelta.sub(web3.utils.toBN(swaps[i].returnValues.amount1Out))
+            targetTokenTransaction = web3.utils.toBN(swaps[i].returnValues.amount0In - swaps[i].returnValues.amount0Out)
+            targetTokenDelta = targetTokenDelta.add(web3.utils.toBN(swaps[i].returnValues.amount0In))
+            targetTokenDelta = targetTokenDelta.sub(web3.utils.toBN(swaps[i].returnValues.amount0Out))
+        }
+        
+        console.log('         Blocks Analyzed:',inputs.blocksToAnalyze)
+        console.log('   Transactions Analyzed:',swaps.length)
+        console.log('                    From:',startTime.toUTCString())
+        console.log('                      To:',endTime.toUTCString())
+        console.log('               -',baseTokenData.symbol,'Change:',web3.utils.fromWei(baseTokenDelta,'ether'))
+        console.log('               -',targetTokenData.symbol,'Change:',web3.utils.fromWei(targetTokenDelta,'ether'))
+
+        baseTokenIn = web3.utils.toBN(Math.min(inGivenPrice, maxTrade, web3.utils.toWei((baseBalance - 0.001).toString(),'ether')))
+        console.log('         Trying to Trade:', web3.utils.fromWei(baseTokenIn.toString(),'ether'), baseTokenData.symbol)
+        
+        console.log('-- Checking availability...')
+        if (inGivenPrice < minTrade) { //Check Liquidity - can we trade at least our Min Trade Size without affecting price?
+            console.log(' * Insufficient pool liquidity *')
+        } else if ((Number(web3.utils.fromWei(baseTokenIn.toString(),'ether')) + Number(web3.utils.fromWei(baseTokenDelta,'ether'))) > 85 ) { //Check Recent Transactions - are we trading against recent opposing trades?
+            console.log(' * Insufficient opposing trades *')
+        } else {
         // Effective Price <- based on actual values traded
         quote = await router.methods.getAmountOut(baseTokenIn, baseTokenReserve, targetTokenReserve).call()
         console.log('           Quoted Return:', web3.utils.fromWei(quote.toString(),'ether'), targetTokenData.symbol)
@@ -149,7 +190,7 @@ async function monitorPrice() {
         
         var gasPrice = await web3.eth.getGasPrice()
         gasPrice = web3.utils.toBN(gasPrice * 1.10) // will pay 10% above current avg. gas prices to expedite transaction
-        
+
         let now = moment().unix() // fetch current unix timestamp
         let deadline = now + 60 // add 60 seconds
         let amountOutMin = (quote * 0.99).toString() // 1% slippage
@@ -162,7 +203,17 @@ async function monitorPrice() {
             process.env.ACCOUNT,
             deadline
             ).estimateGas({from: process.env.ACCOUNT,})
-                        
+        
+        var gasLimitBN = new BN(gasLimit.toString())
+        var gasPriceBN = new BN(gasPrice.toString())
+        var totalGasCost = gasLimitBN.mul(gasPriceBN)
+        console.log('                Gas Cost:',web3.utils.fromWei(totalGasCost.toString(), 'ether'))
+        console.log('           Max Gas Limit:',inputs.maxGasPayment)
+
+        if (Number(web3.utils.fromWei(totalGasCost.toString(), 'ether')) > inputs.maxGasPayment) {
+            console.log(' * Cost of Gas Exceeds Limit *')
+        } else {
+
         var swapExecution = await router.methods.swapExactTokensForTokens(
             baseTokenIn,
             amountOutMin,
@@ -184,6 +235,7 @@ async function monitorPrice() {
         fs.writeFileSync('./approvalStatus.json', JSON.stringify(newApprovedAmount, null, 2) , 'utf-8');
 
         console.log('-- Process Complete...')
+        }
         }
 
     } catch (error) {
