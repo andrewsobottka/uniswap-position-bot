@@ -12,7 +12,7 @@ const moment = require('moment')
 //--- directory files
 const inputs = require('./inputs.js')
 const approve = require('./approve.js')
-const contractData = JSON.parse(fs.readFileSync('./contractData.json')) // download latst from https://github.com/andrewsobottka/eth-data
+const contractData = JSON.parse(fs.readFileSync('./contractData.json')) // download latest from https://github.com/andrewsobottka/eth-data
 
 //----- SERVER CONFIG -----//
 const PORT = process.env.PORT || 5000
@@ -43,7 +43,6 @@ const targetToken = new web3.eth.Contract(targetTokenData.abi, targetTokenData.a
 
 
 //----- USER INPUTS -----//
-//const baseTokenApproved = web3.utils.toWei(inputs.baseTokenApproved, 'mwei') // converted to units of wei
 var minTrade = web3.utils.toWei(inputs.minTradeSize, 'ether') // In units of base token, converted to no decimals
 var maxTrade = web3.utils.toWei(inputs.maxTradeSize, 'ether') // In units of base token, converted to no decimals
 var limitPrice = inputs.limitPrice // max base tokens to pay for 1 target token
